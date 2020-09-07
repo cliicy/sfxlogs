@@ -1,0 +1,17 @@
+usuage:
+/bin/bash run_sfxlogs_cases.sh
+
+dependency packages:
+sshpass:
+centos:
+sshpass-1.06-2.el7.x86_64
+ubuntu:
+apt install sshpass
+
+
+
+wol:
+centos: 
+yum install wol-0.7.1-23.el7.x86_64 / wol-0.7.1-23.el6.x86_64
+ubuntu:
+apt-get install wakeonlan

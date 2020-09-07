@@ -1,0 +1,32 @@
+export SW_VERSION=latest
+export bin_bash=/bin/bash
+export drv_br=rc_320x
+export bundle_dir=`pwd`/bundle_logs
+export mount_dir=`pwd`
+export mnt_opt=" -o discard,noatime,nodiratime"
+export sfx_logs=/usr/bin/sfx-logs
+export partitions=2
+export partition_size=30
+export fio_runtime=3
+export ps_server=192.168.109.201
+export goldimage_server=192.168.110.175
+export fpga_version=4759
+export ip_map=`pwd`/cfg/ip_map
+export gdimg_case_dir=/tmp/goldimage-case
+export local_share=/share_bj
+export nfs_share=192.168.10.123:/share_bj
+export drv_path=/share_bj/releases/Engineering/
+export drv_version=rc_3.2.1.0-r52500
+export fpga_base_dir=${local_share}/releases/vanda/B17A
+export gdssh_cmd="sshpass -p scaleflux"
+export install_drv_cmd="${bin_bash} ./new_reg_prepare.sh --kc --rpm --sfxrpm --br ${drv_br} --pth ${drv_path}/${drv_version}"
+export src_install="--src_install src_install=1"
+
+export ck_install_drv=1
+export ck_rawdisk=1
+export ck_fsdisk=1
+export ck_multipart_rawdisk_fs=1
+export ck_512B_sector=1
+export ck_4K_sector=1
+export ck_aw_onoff=1
+export ck_gold_image=1

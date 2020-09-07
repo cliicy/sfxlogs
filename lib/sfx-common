@@ -1,0 +1,116 @@
+#!/bin/bash
+
+
+function log_warn()
+{
+    echo "`date`:WARNING: $1"
+}
+
+function log_error()
+{
+    echo "`date`:ERROR: $1"
+}
+
+function log_debug()
+{
+    echo "`date`:DEBUG: $1"
+}
+
+function log_info()
+{
+    echo "`date`:INFO: $1"
+}
+
+
+function remote_cmd()
+{
+    #running command to remote testing machine
+    ssh -tt $host $1
+}
+
+#print to console and also save to file
+function log_info_file()
+{
+  echo "`date`:INFO: $1" | tee -a $2
+}
+
+function wait_machine_ready()
+{
+        #wait remote testing machine ready after PF/reboot
+        #timeout 30 minutes
+        serverip=$1
+        for ((retry_num = 1; retry_num <= 30; retry_num++)); do
+            pwd_remote=`ssh -tt ${serverip} "pwd"`
+            if [[ $? -ne 0 ]]; then
+                log_debug "Machine not ready, please wait ..."
+                sleep 20
+            else
+                log_debug "Machine is ready"
+                sleep 10
+                break
+            fi
+            if [[ $retry_num -eq 30 ]]; then
+                log_error "Give up to connect machine, it can not start up"
+                return 1
+            fi
+        done
+}
+
+function remote_powerCycle()
+{
+    #send power cycle from master for remote testing machine, and wait machine ready
+    #using ip_map to read power cycle information
+    #ip_map example:
+    #power_swith_type remote_machine_ip powerSwith_or_ipmi_ip
+    #dli 192.168.3.169 192.168.3.248 010 0
+    #dlipro 192.168.7.106 192.168.5.215 cycle_outlet6 0
+    #ipmi 192.168.4.138 192.168.4.38 ADMIN ADMIN
+
+	serverip=$1
+	if [ -e ${ip_map} ]; then
+        	pfuser=`cat ${ip_map} | grep ${serverip} | awk '{print $4}'`
+        	if [[ $pfuser != "" ]]; then
+        		log_debug "Found power cycle information ${serverip} on ${ip_map}"
+    	else
+        	log_error "Not find ${serverip} in ip_map, please add power cycle infor to ip_map"
+        	exit 1
+    	fi
+    	pfpassword=`cat ${ip_map} | grep ${serverip} | awk '{print $5}'`
+    	pf_status==`cat ${ip_map} | grep ${serverip} | awk '{print $1}'`
+    	ipmiaddress=`cat ${ip_map} | grep ${serverip} | awk '{print $3}'`
+	else
+    		echo "no ip_map file, can not get the power cycle info"
+    		exit 1
+	fi
+
+	if [[ $pf_status =~ "ipmi" ]]; then
+    		pf_cmd="ipmitool -I lanplus -H ${ipmiaddress} -U ${pfuser} -P ${pfpassword} chassis power cycle"
+    		test_machine_server="yes"
+	elif [[ $pf_status =~ "dlipro" ]]; then
+    		pf_cmd="curl http://admin:1234@${ipmiaddress}/script.cgi?run=${pfuser}"
+    		mac_address=`arp -a ${serverip} | awk  '{print $4}'`
+	else
+    		pf_cmd="curl http://admin:1234@${ipmiaddress}/script?run${pfuser}=run"
+    		mac_address=`arp -a ${serverip} | awk  '{print $4}'`
+	fi
+
+        log_debug "Running power cycle job"
+        log_debug "Send power cycle cmd: $pf_cmd, please wait ..."
+        $pf_cmd
+        if [[ $? -ne 0 ]]; then
+                log_warn "Failed to send power cycle cmd, try again"
+                sleep 5
+                $pf_cmd
+        fi
+        sleep 10
+        if [[ $pf_status =~ "ipmi" ]]; then
+        	log_debug "Tesing machine is server, no need send wake online command"
+        else
+                log_debug "Send wake on line commad: wol ${mac_address}"
+                wol ${mac_address}
+		sleep 5
+		wol ${mac_address}
+        fi
+	wait_machine_ready $serverip
+}
+

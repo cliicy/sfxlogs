@@ -1,0 +1,255 @@
+#!/bin/bash
+
+
+export nfs_share=192.168.10.123:/share_bj
+export local_share=/share_bj
+export sw_base_dir=${local_share}/releases/Engineering
+export fpga_base_dir=${local_share}/releases/vanda/B17A
+export app_base=/opt/app
+
+
+function init_network_env() {
+    ip_cmd="/usr/bin/ip"
+    if [ ! -f ${ip_cmd} ]; then ip_cmd=/sbin/ip; fi
+    ip_subnet=$(${ip_cmd} -4 a | grep inet | grep -v -e "scope host" -e "ppp" -e "virbr" -e "docker" -e "192.168.122" | sed -r "s/\s+/,/g" | cut -d, -f3 | cut -d. -f 1-3 | uniq | head -n 1)
+    case ${ip_subnet} in
+        "192.168.10" | "192.168.11")
+        echo "[${ip_subnet}] is in Beijing office network"
+        # BJ subnet, use 192.168.10.123:/share_bj -> /share_bj
+        ;;
+
+        "192.168.3" | "192.168.4")
+        # SJ subnet, use 192.168.3.20:/share -> /share
+        echo "[${ip_subnet}] is in San Jose office network"
+        export nfs_share=192.168.3.20:/share
+        export local_share=/share
+        export sw_base_dir=${local_share}/releases/Engineering
+        export fpga_base_dir=${local_share}/releases/vanda/B17A
+        ;;
+
+        *)
+        echo "[${ip_subnet}] is not a valid subnet"
+        export nfs_share=""
+        ;;
+    esac
+
+    if [ "${nfs-share}" == "" ]; then return 1; fi
+
+    mount | grep "on ${local_share}"
+    if [ $? -ne 0 ];
+    then
+        sudo mkdir ${local_share}
+        sudo mount ${nfs_share} ${local_share}
+        mount | grep "on ${local_share}"
+        if [ "${nfs-share}" == "" ]; then return 1; fi
+    fi
+}
+
+
+# get_sw_dir latest|rc_3.2.1.0-r52500
+function get_sw_dir() {
+    exp_ver=$1
+    rc_prefix="rc_3*/"
+    if [[ "${exp_ver}" == "" ]] || [[ "${exp_ver}" == "latest" ]];
+    then
+        pushd ${sw_base_dir}
+        export sw_dir=$(ls -d ${rc_prefix} | tail -n1)
+        popd
+    else
+        export sw_dir=${exp_ver}
+    fi
+
+    export sw_ver=$(echo ${sw_dir} | tail -n1 | cut -c4- | sed "s/r//g")
+    export sw_ver=${sw_ver%%/}
+    echo "candidate dir [${sw_dir}]"
+
+    if [ "${sw_dir}" == "" ];
+    then
+        echo "[${sw_dir}] not valid"
+        return 1
+    fi
+
+    if [ ! -d ${sw_base_dir}/${sw_dir} ];
+    then
+        echo "[${sw_dir}] not found"
+        sw_dir=_${sw_dir}
+        echo "candidate dir [${sw_dir}]"
+        if [ ! -d ${sw_base_dir}/${sw_dir} ];
+        then
+            echo "[${sw_dir}] no found"
+            return 1
+        fi
+    fi
+
+    echo "[${sw_dir}] confirmed"
+    return 0
+}
+
+function get_install_pkg() {
+    pkg_type=$1 # rpm or deb
+    prefix=sfx3xdriver
+    kernel_ver=(`uname -r | sed -r "s/^([0-9]+\.[0-9]+\.[0-9]+-[0-9]+)\.([a-q0-9]+.*)/\1 \2/g"`)
+    kernel_info=`uname -r`
+    p_type=${kernel_info%.*}
+    plat_type=${p_type##*.}
+    pkg_pattern=${prefix}-${kernel_ver[0]}-*
+    export pkg_file=$(find ${sw_base_dir}/${sw_dir} -name ${pkg_pattern})
+
+    echo "candidate bin_pkg [${pkg_file}] sw_ver: ${sw_ver} platform ${plat_type}"
+
+    if [[ "${pkg_file}" == "" ]] || [[ ! -f ${pkg_file} ]];
+    then
+        if [ "${pkg_type}" == "" ]; then pkg_type=x86_64.src.rpm; fi
+        prefix=sfx3xdriver
+        pkg_pattern=${prefix}-${sw_ver}.${plat_type}*.${pkg_type}
+        export pkg_file=${sw_base_dir}/${sw_dir}/${pkg_pattern}
+
+        echo "candidate src_pkg [${pkg_file}]"
+
+        if [ ! -f ${pkg_file} ];
+        then
+            echo "not valid"
+            return 1
+        else
+            echo "confirmed"
+            return 0
+        fi   
+    else
+        echo "confirmed"
+        return 0
+    fi
+}
+
+function umount_dev() {
+    dev_prefix=sfdv
+    mntpts=$(lsblk -o kname,mountpoint | grep ${dev_prefix} | sed -r "s/\s/,/g" | cut -d, -f2 | uniq)
+    if [ "${mntpts}" != "" ]; 
+    then 
+        for mntpt in ${mntpts};
+        do
+            pids=$(sudo lsof | grep /opt/data/sfx | sed -r "s/\s+/,/g" | cut -d, -f2 | uniq)
+            if [ "${pids}" != "" ]; 
+            then 
+                echo "killing pids [${pids}] which using ${mntpt}"
+                sudo kill -9 ${pids}
+                sleep 30
+            fi
+            
+            echo "unmounting ${mntpt}"
+            sudo umount ${mntpts};
+            if [ $? -ne 0 ]; then echo "sfdv dev is busy"; return 1; fi
+        done
+    fi
+}
+
+function install_sw() {
+    prefix=sfx3xdriver
+    ext_pkg=$(rpm -qa | grep ${prefix})
+
+    if [ "${ext_pkg}" != "" ];
+    then
+        echo "[${ext_pkg}] [${sw_ver}]"
+        echo ${ext_pkg} | grep ${sw_ver}
+        
+        if [ $? -ne 0 ];
+        then 
+            echo "existing sw [${ext_pkg}] different from [${sw_ver}], need to remove & install"
+
+            umount_dev; if [ $? -ne 0 ]; then echo "device busy, abort"; return 1; fi
+
+            echo "removing [${ext_pkg}]"
+            sudo rpm -e ${ext_pkg}
+            if [ $? -ne 0 ]; then echo "remove existing [${ext_pkg}] failed"; return 1; fi
+            echo "removed"
+        else
+            echo "${ext_pkg} already installed"
+            return 0
+        fi
+    fi    
+
+    sudo rpm -i ${pkg_file}
+    if [ $? -ne 0 ]; then echo "failed to install [${pkg_file}]"; return 1; fi
+    for i in {1.300}; do lsblk /dev/sfdv*; if [ $? -eq 0 ]; then return 0; fi; sleep 5; done 
+    echo "error: no sfdv device found, sw not working properly"
+    return 2;
+}
+
+function install_fpga() {
+    fpga_ver=$(sudo sfx-status | grep FPGA | sed -r "s/\s+/,/g" | cut -d, -f3 | awk '{print int($0)}')
+    # TBD
+}
+
+function collect_sys_info() {
+    # collect sys information, including
+    #   1. cpu
+    #   2. memory
+    #   3. disk
+    #   4. os
+    #   5. css-status output
+    local_output_dir=$1
+    css_status=$2
+    if [ "${local_output_dir}" == "" ];
+    then
+        local_output_dir=`pwd`
+    fi
+
+    if [ "${css_status}" == "" ];
+    then
+        css_status="sfx-status"
+    fi
+
+    echo -e "\n[sys]"           >  ${local_output_dir}/sysinfo.txt
+    cat /sys/class/dmi/id/sys_vendor \
+                                >> ${local_output_dir}/sysinfo.txt
+    cat /sys/class/dmi/id/product_name \
+                                >> ${local_output_dir}/sysinfo.txt
+    cat /sys/class/dmi/id/product_version \
+                                >> ${local_output_dir}/sysinfo.txt
+    echo -e "\n[cpu]"           >> ${local_output_dir}/sysinfo.txt
+    lscpu                       >> ${local_output_dir}/sysinfo.txt
+    echo -e "\n[memory]"        >> ${local_output_dir}/sysinfo.txt
+    free -m -h                  >> ${local_output_dir}/sysinfo.txt
+    echo -e "\n[disk]"          >> ${local_output_dir}/sysinfo.txt
+    lsblk                       >> ${local_output_dir}/sysinfo.txt
+    df -h                       >> ${local_output_dir}/sysinfo.txt
+    echo -e "\n[nvme]"          >> ${local_output_dir}/sysinfo.txt
+    sudo nvme list              >> ${local_output_dir}/sysinfo.txt
+    echo -e "\n[os]"            >> ${local_output_dir}/sysinfo.txt
+    uname -a                    >> ${local_output_dir}/sysinfo.txt
+    cat /etc/system-release     >> ${local_output_dir}/sysinfo.txt
+    echo -e "\n[filesystem]"	>> ${local_output_dir}/sysinfo.txt
+    findmnt			>> ${local_output_dir}/sysinfo.txt
+    echo -e "\n[css-status]"    >> ${local_output_dir}/sysinfo.txt
+
+    which ${css_status} > /dev/null
+    if [ $? -eq 0 ];
+    then
+        sudo ${css_status}      >> ${local_output_dir}/sysinfo.txt
+    fi
+}
+
+function parted_drv() {
+## $1 /dev/sfxxxx
+## $2 number of partitions
+
+sfxcss=$1
+echo "will partion $1"
+
+case $2 in
+       1)
+         echo "1 partion" 
+         echo -e "mklabel gpt -s\n
+mkpart primary $3% $4%\n
+quit\n
+" | sudo parted ${sfxcss}
+         ;;
+       2)
+         echo "2 partion" 
+         echo "mklabel gpt
+mkpart primary 0% 10%
+mkpart primary 10% 100%
+quit
+" | sudo parted ${sfxcss}
+         ;;
+esac
+}
